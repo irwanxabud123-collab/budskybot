@@ -1,4 +1,4 @@
-const CACHE = 'budsky-shell-v1';
+const CACHE = 'budsky-shell-v2';
 const SHELL = ['/', '/index.html', '/app.css', '/app.js', '/budsky-logo.jpg', '/manifest.webmanifest'];
 
 self.addEventListener('install', event => {
@@ -21,9 +21,9 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  event.respondWith(caches.match(req).then(cached => cached || fetch(req).then(res => {
+  event.respondWith(fetch(req).then(res => {
     const copy = res.clone();
     caches.open(CACHE).then(cache => cache.put(req, copy));
     return res;
-  })));
+  }).catch(() => caches.match(req)));
 });
