@@ -158,3 +158,9 @@ See `ALLOWED_PROGRAM_IDS_DRAFT.md` for the initial program-ID review list.
 ## Mobile Control Center
 
 Budsky includes a durable server-side Control Center at `/api/control` and a mobile-friendly UI switch for PAPER/LIVE operation. Daily switching does not require editing Netlify environment variables. The one-time deployment gate remains separate: the approved deployment must be LIVE-capable (`MODE=LIVE`, `LIVE_ENABLED=true`), while the durable control state remains PAPER until an authenticated operator explicitly activates LIVE. If the control state is unavailable, LIVE execution fails closed. Emergency Stop switches the durable state back to PAPER and blocks new LIVE entries.
+
+
+## Dashboard trade flow (PAPER vs LIVE)
+- PAPER: Market Scanner → token card → **Open Paper Position** → enter USDC → **Review Paper Trade** → **Open Paper Position**. No wallet, signature, or blockchain transaction occurs. Open PAPER positions are shown in **Positions** and can be closed there.
+- LIVE: the same button changes to **Open Live Position** only after the deployment/control gates permit LIVE. The flow is Jupiter quote → server Risk Engine → transaction-intent inspection → wallet signature → Jupiter execution → Solana confirmation/reconciliation. LIVE remains disabled by default and must not be enabled before the release gates in `ACCEPTANCE.md` are verified.
+- Technical Analysis: Market Scanner discovery uses Jupiter; technical analysis uses GeckoTerminal 15m OHLCV. A probability value is not displayed unless validated calibration evidence exists.

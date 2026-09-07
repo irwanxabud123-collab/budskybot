@@ -1,0 +1,185 @@
+import { readFile } from 'node:fs/promises';
+import { normalizeEvent } from './dataset.js';
+export async function loadReplayDataset(path) {
+    const parsed = JSON.parse(await readFile(path, 'utf8'));
+    const values = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' && Array.isArray(parsed.events) ? parsed.events : []);
+    const events = values.map(normalizeEvent).sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+    const initial = parsed && typeof parsed === 'object' ? parsed.initial_capital_usd : null;
+    const source = parsed && typeof parsed === 'object' && (parsed.source === 'LIVE' || parsed.source === 'PAPER' || parsed.source === 'REPLAY') ? parsed.source : 'REPLAY';
+    return { schema_version: '2.0.0', status: events.length ? 'READY' : 'NEED LIVE DATA', source, initial_capital_usd: typeof initial === 'number' && Number.isFinite(initial) ? initial : null, events };
+}
+export function splitChronologically(events) {
+    if (!events.length)
+        return { training: [], validation: [], oos: [] };
+    const start = events[0].timestamp_ms, end = events[events.length - 1].timestamp_ms, span = end - start;
+    if (span <= 0)
+        return { training: events.slice(), validation: [], oos: [] };
+    const t1 = start + span * .6, t2 = start + span * .8;
+    return { training: events.filter(e => e.timestamp_ms < t1), validation: events.filter(e => e.timestamp_ms >= t1 && e.timestamp_ms < t2), oos: events.filter(e => e.timestamp_ms >= t2) };
+}
+function seededRandom(seed) { let s = seed >>> 0; return () => { s = (1664525 * s + 1013904223) >>> 0; return s / 4294967296; }; }
+function median(v) { if (!v.length)
+    return null; const a = v.slice().sort((x, y) => x - y); return a[Math.floor((a.length - 1) / 2)] ?? null; }
+function percentile(v, p) { if (!v.length)
+    return null; const a = v.slice().sort((x, y) => x - y), i = (a.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i); return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo); }
+function maxDrawdown(v) { let eq = 0, peak = 0, dd = 0; for (const x of v) {
+    eq += x;
+    peak = Math.max(peak, eq);
+    dd = Math.max(dd, peak - eq);
+} return dd; }
+function streak(v, positive) { let cur = 0, max = 0; for (const x of v) {
+    if (positive ? x > 0 : x < 0) {
+        cur++;
+        max = Math.max(max, cur);
+    }
+    else
+        cur = 0;
+} return max; }
+function wilson(wins, n, z = 1.96) { if (!n)
+    return [null, null]; const p = wins / n, den = 1 + z * z / n, center = (p + z * z / (2 * n)) / den, half = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n) / den; return [Math.max(0, center - half), Math.min(1, center + half)]; }
+function tradeReturns(trades, initial) { if (initial === null || initial <= 0)
+    return null; let eq = initial; const out = []; for (const t of trades) {
+    if (t.netPnlUsd === null)
+        continue;
+    out.push(t.netPnlUsd / eq);
+    eq += t.netPnlUsd;
+    if (eq <= 0)
+        break;
+} return out; }
+function ratioStats(trades, initial) { const returns = tradeReturns(trades, initial); if (!returns || returns.length < 2)
+    return { sharpe: null, sortino: null, calmar: null }; const mean = returns.reduce((a, b) => a + b, 0) / returns.length; const sd = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / (returns.length - 1)); const downside = Math.sqrt(returns.reduce((a, b) => a + Math.min(0, b) ** 2, 0) / returns.length); const pnl = trades.map(t => t.netPnlUsd).filter((x) => x !== null); const dd = maxDrawdown(pnl); const total = pnl.reduce((a, b) => a + b, 0); const returnPct = initial ? total / initial : null; return { sharpe: sd > 0 ? mean / sd * Math.sqrt(returns.length) : null, sortino: downside > 0 ? mean / downside * Math.sqrt(returns.length) : null, calmar: dd > 0 && returnPct !== null ? returnPct / dd : null }; }
+function historicalImpact(events, event) {
+    if (event.jupiter_quote.priceImpactPct !== null)
+        return event.jupiter_quote.priceImpactPct;
+    const depth = event.liquidity.depth_1pct, notional = event.pnl.notional_usd;
+    if (depth === null || notional === null)
+        return null;
+    const points = events.filter(x => x.timestamp_ms < event.timestamp_ms && x.pair === event.pair && x.liquidity.depth_1pct !== null && x.pnl.notional_usd !== null && x.jupiter_quote.priceImpactPct !== null)
+        .map(x => ({ x: x.liquidity.depth_1pct, n: x.pnl.notional_usd, y: x.jupiter_quote.priceImpactPct }))
+        .filter(x => Math.abs(x.n - notional) / Math.max(notional, 1) <= 0.25)
+        .sort((a, b) => a.x - b.x);
+    if (points.length < 2)
+        return null;
+    for (let i = 0; i < points.length; i++)
+        if (points[i].x === depth)
+            return points[i].y;
+    for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1], b = points[i];
+        if (depth > a.x && depth < b.x && b.x !== a.x) {
+            const w = (depth - a.x) / (b.x - a.x);
+            return a.y + (b.y - a.y) * w;
+        }
+    }
+    return null;
+}
+export function simulateExecution(event, historical, cfg) {
+    const impact = historicalImpact(historical, event);
+    const source = event.jupiter_quote.priceImpactPct !== null ? 'OBSERVED' : impact !== null ? 'DERIVED' : 'MISSING';
+    let success = event.execution.success;
+    const latency = event.execution.latency_ms === null ? null : event.execution.latency_ms + cfg.additionalLatencyMs;
+    const slip = event.execution.slippage_bps === null ? null : event.execution.slippage_bps * cfg.slippageMultiplier + cfg.additionalSlippageBps;
+    const fee = event.execution.fee_usd === null ? null : event.execution.fee_usd * cfg.feeMultiplier;
+    return { success, latencyMs: latency, slippageBps: slip, feeUsd: fee, priceImpactPct: impact, errorCode: event.execution.error_code, source };
+}
+export function replay(events, cfg) {
+    const rnd = seededRandom(cfg.seed ?? 42);
+    return events.filter(e => e.event_type === 'EXECUTION' || e.event_type === 'POSITION_CLOSE').map((e, i) => {
+        const ex = simulateExecution(e, events.slice(0, i), cfg);
+        let success = ex.success;
+        if (success === true && cfg.failedTxRate > 0 && rnd() < cfg.failedTxRate) {
+            success = false;
+            ex.errorCode = 'SIMULATED_FAILED_TRANSACTION';
+        }
+        ex.success = success;
+        const gross = e.pnl.gross_pnl_usd, notional = e.pnl.notional_usd;
+        const slipCost = notional !== null && ex.slippageBps !== null ? Math.abs(notional) * ex.slippageBps / 10000 : null;
+        let net = null;
+        if (success === true) {
+            if (gross !== null && ex.feeUsd !== null && slipCost !== null)
+                net = gross - ex.feeUsd - slipCost;
+            else if (cfg.feeMultiplier === 1 && cfg.slippageMultiplier === 1 && cfg.additionalSlippageBps === 0 && e.pnl.net_pnl_usd !== null)
+                net = e.pnl.net_pnl_usd;
+        }
+        else if (success === false && ex.feeUsd !== null)
+            net = -ex.feeUsd;
+        return { timestampMs: e.timestamp_ms, tradeId: e.trade_id, pair: e.pair, grossPnlUsd: gross, feeUsd: ex.feeUsd, slippageCostUsd: slipCost, netPnlUsd: net, execution: ex };
+    });
+}
+function metrics(trades, initial) {
+    const vals = trades.map(t => t.netPnlUsd).filter((x) => x !== null && Number.isFinite(x));
+    const wins = vals.filter(x => x > 0), losses = vals.filter(x => x < 0);
+    const fees = trades.map(t => t.feeUsd).filter((x) => x !== null);
+    const slips = trades.map(t => t.execution.slippageBps).filter((x) => x !== null);
+    const impacts = trades.map(t => t.execution.priceImpactPct).filter((x) => x !== null);
+    const lats = trades.map(t => t.execution.latencyMs).filter((x) => x !== null);
+    const total = vals.reduce((a, b) => a + b, 0), grossWin = wins.reduce((a, b) => a + b, 0), grossLoss = Math.abs(losses.reduce((a, b) => a + b, 0));
+    const rs = ratioStats(trades, initial);
+    const returnPct = initial && initial > 0 ? total / initial * 100 : null;
+    return { trades: vals.length, wins: wins.length, losses: losses.length, winRate: vals.length ? wins.length / vals.length : null, lossRate: vals.length ? losses.length / vals.length : null, averageWinUsd: wins.length ? grossWin / wins.length : null, averageLossUsd: losses.length ? grossLoss / losses.length : null, riskReward: wins.length && losses.length ? (grossWin / wins.length) / (grossLoss / losses.length) : null, expectancyUsd: vals.length ? total / vals.length : null, profitFactor: grossLoss > 0 ? grossWin / grossLoss : null, maxDrawdownUsd: vals.length ? maxDrawdown(vals) : null, recoveryFactor: vals.length && maxDrawdown(vals) > 0 ? total / maxDrawdown(vals) : null, sharpe: rs.sharpe, sortino: rs.sortino, calmar: rs.calmar, winningStreak: streak(vals, true), losingStreak: streak(vals, false), totalReturnPct: returnPct, totalFeeUsd: fees.length ? fees.reduce((a, b) => a + b, 0) : null, averageSlippageBps: slips.length ? slips.reduce((a, b) => a + b, 0) / slips.length : null, averagePriceImpactPct: impacts.length ? impacts.reduce((a, b) => a + b, 0) / impacts.length : null, failedTransactionRate: trades.length ? trades.filter(t => t.execution.success === false).length / trades.length : null, averageLatencyMs: lats.length ? lats.reduce((a, b) => a + b, 0) / lats.length : null, medianLatencyMs: median(lats), netPnlUsd: vals.length ? total : null, confidenceIntervalWinRate95: wilson(wins.length, vals.length) };
+}
+export function monteCarlo(trades, iterations = 1000, seed = 42, initialCapitalUsd = null) { const vals = trades.map(t => t.netPnlUsd).filter((x) => x !== null && Number.isFinite(x)); if (!vals.length)
+    return { iterations, samples: 0, worst5pctDrawdownUsd: null, medianDrawdownUsd: null, worstLosingStreak: null, returnRangeUsd: [null, null], ruinProbability: null }; const rnd = seededRandom(seed), dds = [], rets = [], streaks = []; let ruin = 0; for (let i = 0; i < iterations; i++) {
+    const a = vals.slice();
+    for (let j = a.length - 1; j > 0; j--) {
+        const k = Math.floor(rnd() * (j + 1));
+        [a[j], a[k]] = [a[k], a[j]];
+    }
+    const total = a.reduce((x, y) => x + y, 0);
+    dds.push(maxDrawdown(a));
+    rets.push(total);
+    streaks.push(streak(a, false));
+    if (initialCapitalUsd !== null && initialCapitalUsd > 0) {
+        let eq = initialCapitalUsd;
+        for (const p of a) {
+            eq += p;
+            if (eq <= 0) {
+                ruin++;
+                break;
+            }
+        }
+    }
+} dds.sort((a, b) => a - b); rets.sort((a, b) => a - b); streaks.sort((a, b) => a - b); return { iterations, samples: vals.length, worst5pctDrawdownUsd: percentile(dds, .95), medianDrawdownUsd: percentile(dds, .5), worstLosingStreak: percentile(streaks, .95), returnRangeUsd: [percentile(rets, .05), percentile(rets, .95)], ruinProbability: initialCapitalUsd !== null && initialCapitalUsd > 0 ? ruin / iterations : null }; }
+function completeness(events) { const n = events.length || 1; const exec = events.filter(e => e.execution.latency_ms !== null && e.execution.success !== null && e.execution.provenance === 'OBSERVED').length / n * 100; const pnl = events.filter(e => e.pnl.net_pnl_usd !== null && e.pnl.provenance === 'OBSERVED').length / n * 100; const market = events.filter(e => e.market_snapshot.provenance === 'OBSERVED').length / n * 100; const quote = events.filter(e => e.jupiter_quote.outAmount !== null && e.jupiter_quote.priceImpactPct !== null).length / n * 100; return { executionCompletenessPct: exec, pnlCompletenessPct: pnl, marketCompletenessPct: market, quoteCompletenessPct: quote }; }
+export function runValidation(events, initialCapitalUsd = null) {
+    const sorted = events.slice().sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+    if (!sorted.length) {
+        const empty = metrics([], initialCapitalUsd);
+        return { status: 'NEED LIVE DATA', dataEvents: 0, completedTrades: 0, dateRange: { startMs: null, endMs: null, days: null }, dataQuality: { executionCompletenessPct: 0, pnlCompletenessPct: 0, marketCompletenessPct: 0, quoteCompletenessPct: 0, missingFields: ['events', 'execution', 'pnl', 'market_snapshot', 'jupiter_quote'] }, split: { trainingEvents: 0, validationEvents: 0, oosEvents: 0, training: empty, validation: empty, oos: empty }, walkForward: { windowDays: 30, windows: 0, results: [] }, regimes: [], regimePerformance: [], monteCarlo: monteCarlo([], 1000, 42, initialCapitalUsd), stress: { fee2x: empty, slippage3x: empty, latencyPlus200ms: empty, failedTx5pct: empty }, limitations: ['Dataset kosong: NEED LIVE DATA.'] };
+    }
+    const split = splitChronologically(sorted), base = { feeMultiplier: 1, additionalSlippageBps: 0, slippageMultiplier: 1, additionalLatencyMs: 0, failedTxRate: 0 };
+    const completed = sorted.filter(e => e.pnl.net_pnl_usd !== null && e.execution.success !== null);
+    const q = completeness(sorted);
+    const missing = [];
+    if (q.executionCompletenessPct < 100)
+        missing.push('execution.latency_ms/success');
+    if (q.pnlCompletenessPct < 100)
+        missing.push('pnl.net_pnl_usd');
+    if (q.marketCompletenessPct < 100)
+        missing.push('market_snapshot.bid/ask');
+    if (q.quoteCompletenessPct < 100)
+        missing.push('jupiter_quote.outAmount/priceImpactPct');
+    const start = sorted[0].timestamp_ms, end = sorted[sorted.length - 1].timestamp_ms, days = (end - start) / 86_400_000;
+    const train = replay(split.training, base), val = replay(split.validation, base), oos = replay(split.oos, base);
+    const wf = [];
+    const DAY = 86_400_000;
+    for (let cursor = start + 30 * DAY; cursor + DAY <= end; cursor += 30 * DAY) {
+        const trainWindow = sorted.filter(e => e.timestamp_ms >= cursor - 30 * DAY && e.timestamp_ms < cursor);
+        const testWindow = sorted.filter(e => e.timestamp_ms >= cursor && e.timestamp_ms < cursor + 30 * DAY);
+        if (trainWindow.length && testWindow.length) {
+            const m = metrics(replay(testWindow, base), initialCapitalUsd);
+            wf.push({ startMs: cursor, endMs: Math.min(cursor + 30 * DAY, end), trainingEvents: trainWindow.length, testEvents: testWindow.length, netPnlUsd: m.netPnlUsd, maxDrawdownUsd: m.maxDrawdownUsd, expectancyUsd: m.expectancyUsd });
+        }
+    }
+    const byDay = new Map();
+    for (const e of sorted) {
+        const k = new Date(e.timestamp_ms).toISOString().slice(0, 10);
+        byDay.set(k, [...(byDay.get(k) ?? []), e]);
+    }
+    const regimes = Array.from(byDay.entries()).map(([date, es]) => { const mids = es.map(e => e.market_snapshot.mid).filter((x) => x !== null); const ret = mids.length >= 2 ? mids[mids.length - 1] / mids[0] - 1 : null; const vols = es.map(e => e.token_data.volatility_24h).filter((x) => x !== null); const liqs = es.map(e => e.liquidity.depth_1pct).filter((x) => x !== null); return { date, returnPct: ret === null ? null : ret * 100, bull: ret === null ? null : ret > 0.02, bear: ret === null ? null : ret < -0.02, sideways: ret === null ? null : Math.abs(ret) <= 0.02, high_vol: vols.length ? Math.max(...vols) >= 0.05 : null, low_vol: vols.length ? Math.max(...vols) < 0.02 : null, low_liq: liqs.length ? Math.min(...liqs) <= Math.max(...liqs) * .25 : null, liquidity_stressed: liqs.length ? Math.min(...liqs) <= Math.max(...liqs) * .1 : null }; });
+    const regimePerformance = ['bull', 'bear', 'sideways', 'high_vol', 'low_vol', 'liquidity_stressed'].map(label => { const subset = sorted.filter(e => { const r = regimes.find(r => r.date === new Date(e.timestamp_ms).toISOString().slice(0, 10)); return r?.[label] === true; }); const m = metrics(replay(subset, base), initialCapitalUsd); return { regime: label, events: subset.length, ...m }; });
+    const stress = (cfg) => metrics(replay(sorted, cfg), initialCapitalUsd);
+    const mc = monteCarlo(replay(sorted, base), 1000, 42, initialCapitalUsd);
+    const ready = q.executionCompletenessPct === 100 && q.pnlCompletenessPct === 100 && completed.length >= 100 && days >= 30;
+    const limitations = ['Price impact hanya OBSERVED atau DERIVED dari observasi historis pada pair yang sama; tidak pernah dibuat dari harga ideal.', 'Bid/ask dan depth_1pct bersifat MISSING bila sumber runtime tidak menyediakannya; tidak boleh diisi tebakan.', '5% failed transaction hanya stress scenario, bukan failure rate historis.', '100 trade dan 30 hari adalah minimum gate konservatif untuk laporan validasi; jumlah kecil tetap harus dianggap tidak cukup secara statistik.', 'Walk-forward 30 hari membutuhkan cakupan kalender yang memadai; 7 hari paper trading tidak cukup untuk membuktikan stabilitas 30 hari.', 'Sharpe/Sortino di sini adalah trade-level, bukan pengganti return time-series harian.', 'Monte Carlo mengacak urutan trade dan tidak membuktikan probabilitas masa depan.'];
+    return { status: ready ? 'READY' : 'NEED LIVE DATA', dataEvents: sorted.length, completedTrades: completed.length, dateRange: { startMs: start, endMs: end, days }, dataQuality: { ...q, missingFields: missing }, split: { trainingEvents: split.training.length, validationEvents: split.validation.length, oosEvents: split.oos.length, training: metrics(train, initialCapitalUsd), validation: metrics(val, initialCapitalUsd), oos: metrics(oos, initialCapitalUsd) }, walkForward: { windowDays: 30, windows: wf.length, results: wf }, regimes, regimePerformance, monteCarlo: mc, stress: { fee2x: stress({ ...base, feeMultiplier: 2 }), slippage3x: stress({ ...base, slippageMultiplier: 3 }), latencyPlus200ms: stress({ ...base, additionalLatencyMs: 200 }), failedTx5pct: stress({ ...base, failedTxRate: .05 }) }, limitations };
+}

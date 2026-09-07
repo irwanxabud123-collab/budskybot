@@ -1,11 +1,11 @@
-import { createHmac, timingSafeEqual, verify as cryptoVerify, createPublicKey } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import nacl from 'tweetnacl';
 import type { Config } from '../config/config.js';
 
 const CHALLENGE_COOKIE = 'budsky_challenge';
 const SESSION_COOKIE = 'budsky_session';
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 60 * 1000;
-const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
 function b64url(bytes: Buffer): string { return bytes.toString('base64url'); }
 function fromB64url(v: string): Buffer { return Buffer.from(v, 'base64url'); }
@@ -69,10 +69,10 @@ export function challengeResponse(message: string): Response {
 
 export function verifyWalletMessage(wallet: string, message: string, signatureBase58: string): boolean {
   try {
-    const pub = base58Decode(wallet); const sig = base58Decode(signatureBase58);
+    const pub = base58Decode(wallet);
+    const sig = base58Decode(signatureBase58);
     if (pub.length !== 32 || sig.length !== 64 || message.length < 20) return false;
-    const key = createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, pub]), format:'der', type:'spki' });
-    return cryptoVerify(null, Buffer.from(message), key, sig);
+    return nacl.sign.detached.verify(new TextEncoder().encode(message), new Uint8Array(sig), new Uint8Array(pub));
   } catch { return false; }
 }
 

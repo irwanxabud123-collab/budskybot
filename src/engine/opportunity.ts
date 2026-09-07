@@ -39,12 +39,24 @@ export interface Opportunity {
   marketScore: number | null;
   riskScore: number;
   confidence: number | null;
-  technicalProvenance: 'MISSING';
-  probabilityStatus: 'UNAVAILABLE';
+  technicalProvenance: 'MISSING' | 'OHLCV_DERIVED' | 'ON_DEMAND' | 'INSUFFICIENT_OHLCV' | 'UNAVAILABLE';
+  probabilityStatus: 'UNAVAILABLE' | 'NOT_CALIBRATED' | 'CALIBRATED';
+  probability?: number | null;
+  technicalError?: string | null;
+  technicalDetails?: {rsi14:number|null;macdHistogram:number|null;trendAlignment:number|null;relativeVolume:number|null;breakout:boolean|null;breakdown:boolean|null;source:string;candleCount?:number;lastCandleAtMs?:number|null};
   category: 'LARGE_CAP' | 'ALTCOIN' | 'MEME' | 'OTHER';
   status: 'WATCH' | 'CANDIDATE' | 'AVOID';
   reasons: string[];
   updatedAtMs: number;
+  marketCapUsd: number | null;
+  fdvUsd: number | null;
+  volume24hUsd: number | null;
+  buyVolume24hUsd: number | null;
+  sellVolume24hUsd: number | null;
+  netVolume24hUsd: number | null;
+  holders: number | null;
+  holderChange24h: number | null;
+  scoreBreakdown?: { momentumProxy:number; marketScore:number|null; riskScore:number; technicalScore:number|null };
 }
 
 const clamp = (n:number,min=0,max=100)=>Math.max(min,Math.min(max,n));
@@ -91,6 +103,13 @@ export function scoreOpportunity(t:ScanToken, nowMs=Date.now()):Opportunity{
   const technicalScore=technical(t), marketScore=market(t), riskScore=risk(t);
   const momentumProxy = clamp(50 + safe(t.stats1h?.priceChange)*1.5 + safe(t.stats24h?.priceChange)*0.25);
   const opportunityScore=Math.round(momentumProxy*0.35 + (marketScore??0)*0.35 + riskScore*0.30);
+  const s24:any=t.stats24h||{};
+  const rawVolume=Number(s24.volume ?? s24.volumeUsd ?? s24.totalVolume ?? NaN);
+  const buyVolume=Number(s24.buyVolume ?? s24.buy_volume ?? NaN);
+  const sellVolume=Number(s24.sellVolume ?? s24.sell_volume ?? NaN);
+  const netVolume=Number.isFinite(buyVolume)&&Number.isFinite(sellVolume)?buyVolume-sellVolume:null;
+  const rawHolders=Number((t as any).holderCount ?? (t as any).holders ?? s24.holderCount ?? s24.holders ?? NaN);
+  const holderChange=Number((t as any).holderChange24h ?? (t as any).holderChange ?? s24.holderChange24h ?? s24.holderChange ?? NaN);
   const reasons:string[]=[];
   if(momentumProxy>=75) reasons.push('Short-term momentum proxy is strong; OHLCV TA is not available from this scanner');
   if(safe(t.stats1h?.buyVolume)>safe(t.stats1h?.sellVolume)) reasons.push('1h buy flow is stronger than sell flow');
@@ -102,5 +121,5 @@ export function scoreOpportunity(t:ScanToken, nowMs=Date.now()):Opportunity{
   if(Math.abs(safe(t.stats5m?.priceChange))>8) reasons.push('Very high short-term volatility');
   if(reasons.length===0) reasons.push('Mixed signals; monitor before entering');
   const status = t.audit?.isSus || (t.liquidity||0)<100_000 || riskScore<35 ? 'AVOID' : opportunityScore>=78 ? 'CANDIDATE' : 'WATCH';
-  return {mint:t.id,symbol:t.symbol,name:t.name,...(t.icon ? {icon:t.icon} : {}),priceUsd:safe(t.usdPrice),change24h:safe(t.stats24h?.priceChange),liquidityUsd:safe(t.liquidity),opportunityScore,technicalScore,marketScore,riskScore,confidence:null,technicalProvenance:'MISSING',probabilityStatus:'UNAVAILABLE',category:category(t),status,reasons,updatedAtMs:nowMs};
+  return {mint:t.id,symbol:t.symbol,name:t.name,...(t.icon ? {icon:t.icon} : {}),priceUsd:safe(t.usdPrice),change24h:safe(t.stats24h?.priceChange),liquidityUsd:safe(t.liquidity),opportunityScore,technicalScore,marketScore,riskScore,confidence:null,technicalProvenance:'MISSING',probabilityStatus:'UNAVAILABLE',category:category(t),status,reasons,updatedAtMs:nowMs,marketCapUsd:Number.isFinite(Number(t.mcap))?Number(t.mcap):null,fdvUsd:Number.isFinite(Number(t.fdv))?Number(t.fdv):null,volume24hUsd:Number.isFinite(rawVolume)?rawVolume:null,buyVolume24hUsd:Number.isFinite(buyVolume)?buyVolume:null,sellVolume24hUsd:Number.isFinite(sellVolume)?sellVolume:null,netVolume24hUsd:netVolume,holders:Number.isFinite(rawHolders)?rawHolders:null,holderChange24h:Number.isFinite(holderChange)?holderChange:null,scoreBreakdown:{momentumProxy,marketScore,riskScore,technicalScore}};
 }

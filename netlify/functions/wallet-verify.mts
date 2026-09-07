@@ -16,5 +16,8 @@ export default async function (req: Request) {
     if (!verifyWalletMessage(wallet, body.message, body.signature)) return Response.json({ error:'wallet_signature_invalid' }, { status:401 });
     const response=issueSession(req,c,wallet,body.message); if (!response) return Response.json({ error:'challenge_cookie_mismatch' }, { status:401 });
     return response;
-  } catch { return Response.json({ error:'wallet_verify_failed' }, { status:400 }); }
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : 'wallet_verify_failed';
+    return Response.json({ error:'wallet_verify_failed', detail }, { status:400 });
+  }
 }

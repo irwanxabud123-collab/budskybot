@@ -1,0 +1,12 @@
+import { writeFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { loadReplayDataset, runValidation } from '../replay/replayEngine.js';
+const path = process.argv[2] ?? 'datasets/budsky-replay.json';
+const out = process.argv[3] ?? 'runtime/validation-report.json';
+const dataset = await loadReplayDataset(path);
+const report = runValidation(dataset.events, dataset.initial_capital_usd ?? null);
+await mkdir(dirname(out), { recursive: true });
+await writeFile(out, JSON.stringify(report, null, 2), 'utf8');
+console.log(JSON.stringify(report, null, 2));
+if (report.status === 'NEED LIVE DATA')
+    process.exitCode = 10;
