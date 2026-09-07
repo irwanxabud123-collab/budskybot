@@ -8,36 +8,80 @@ const TTL=20_000;
 
 async function jup(path:string){
   const key=process.env.JUPITER_API_KEY||'';
-  if(!key) throw new Error('JUPITER_API_KEY is required for real-time market scanning');
+
+  if(!key){
+    throw new Error(
+      'JUPITER_API_KEY is required for real-time market scanning'
+    );
+  }
 
   const r=await fetch(`${BASE}${path}`,{
-    headers:{'x-api-key':key},
+    headers:{
+      'x-api-key':key,
+      'accept':'application/json'
+    },
     signal:AbortSignal.timeout(7000)
   });
 
-  if(!r.ok) throw new Error(`JUPITER_${r.status}`);
+  const text=await r.text();
 
-  return r.json();
+  if(!r.ok){
+    let detail=text;
+
+    try{
+      const parsed=JSON.parse(text);
+      detail=parsed?.error||parsed?.message||text;
+    }catch{}
+
+    throw new Error(
+      `JUPITER_${r.status}: ${detail}`
+    );
+  }
+
+  try{
+    return JSON.parse(text);
+  }catch{
+    throw new Error(
+      `JUPITER_INVALID_JSON: ${text.slice(0,200)}`
+    );
+  }
 }
 
-const technicalCache=new Map<string,{at:number;value:Partial<Opportunity>}>();
+const technicalCache=new Map<string,{
+  at:number;
+  value:Partial<Opportunity>
+}>();
+
 const TECHNICAL_TTL=120_000;
 
-async function enrichTechnical(opportunities:Opportunity[]):Promise<Opportunity[]>{
+async function enrichTechnical(
+  opportunities:Opportunity[]
+):Promise<Opportunity[]>{
+
   const targets=opportunities.slice(0,3);
   const enriched=new Map<string,Partial<Opportunity>>();
 
   for(const o of targets){
+
     const hit=technicalCache.get(o.mint);
 
-    if(hit&&Date.now()-hit.at<TECHNICAL_TTL){
+    if(
+      hit &&
+      Date.now()-hit.at<TECHNICAL_TTL
+    ){
       enriched.set(o.mint,hit.value);
       continue;
     }
 
     try{
+
       const pool=await findTopPool(o.mint);
-      const candles=await fetchOHLCV(pool,'15m',250);
+      const candles=await fetchOHLCV(
+        pool,
+        '15m',
+        250
+      );
+
       const ta=computeTA(candles);
       const score=taScore(ta);
 
@@ -69,51 +113,73 @@ async function enrichTechnical(opportunities:Opportunity[]):Promise<Opportunity[
           breakdown:ta.breakdown.value,
           source:'GeckoTerminal 15m OHLCV',
           candleCount:candles.length,
-          lastCandleAtMs:candles.at(-1)?.timestampMs??null
+          lastCandleAtMs:
+            candles.at(-1)?.timestampMs??null
         },
 
         probabilityStatus:'NOT_CALIBRATED',
         technicalError:null
       };
 
-      technicalCache.set(o.mint,{
-        at:Date.now(),
-        value
-      });
+      technicalCache.set(
+        o.mint,
+        {
+          at:Date.now(),
+          value
+        }
+      );
 
-      enriched.set(o.mint,value);
+      enriched.set(
+        o.mint,
+        value
+      );
 
     }catch(e){
+
       const value:Partial<Opportunity>={
         technicalScore:null,
-        technicalProvenance:'UNAVAILABLE',
-        probabilityStatus:'NOT_CALIBRATED',
+
+        technicalProvenance:
+          'UNAVAILABLE',
+
+        probabilityStatus:
+          'NOT_CALIBRATED',
+
         technicalError:
           e instanceof Error
             ?e.message
             :'TECHNICAL_UNAVAILABLE'
       };
 
-      technicalCache.set(o.mint,{
-        at:Date.now(),
-        value
-      });
+      technicalCache.set(
+        o.mint,
+        {
+          at:Date.now(),
+          value
+        }
+      );
 
-      enriched.set(o.mint,value);
+      enriched.set(
+        o.mint,
+        value
+      );
     }
   }
 
   return opportunities
     .map((x):Opportunity=>{
+
       const e=enriched.get(x.mint);
 
       if(e){
         return {
           ...x,
           ...e,
+
           technicalProvenance:
             e.technicalProvenance ??
             x.technicalProvenance,
+
           probabilityStatus:
             e.probabilityStatus ??
             x.probabilityStatus
@@ -122,8 +188,10 @@ async function enrichTechnical(opportunities:Opportunity[]):Promise<Opportunity[
 
       return {
         ...x,
-        technicalProvenance:'ON_DEMAND',
-        probabilityStatus:'NOT_CALIBRATED'
+        technicalProvenance:
+          'ON_DEMAND',
+        probabilityStatus:
+          'NOT_CALIBRATED'
       };
     })
     .sort(
@@ -134,10 +202,14 @@ async function enrichTechnical(opportunities:Opportunity[]):Promise<Opportunity[
 }
 
 async function scan(){
+
   const now=Date.now();
   const cached=cache.get('scan');
 
-  if(cached&&now-cached.at<TTL){
+  if(
+    cached &&
+    now-cached.at<TTL
+  ){
     return cached.data;
   }
 
@@ -146,9 +218,18 @@ async function scan(){
     traded,
     organic
   ]=await Promise.all([
-    jup('/tokens/v2/toptrending/1h?limit=50'),
-    jup('/tokens/v2/toptraded/1h?limit=50'),
-    jup('/tokens/v2/toporganicscore/1h?limit=50')
+
+    jup(
+      '/tokens/v2/toptrending/1h?limit=50'
+    ),
+
+    jup(
+      '/tokens/v2/toptraded/1h?limit=50'
+    ),
+
+    jup(
+      '/tokens/v2/toporganicscore/1h?limit=50'
+    )
   ]);
 
   const map=new Map<string,ScanToken>();
@@ -160,35 +241,48 @@ async function scan(){
       ...organic
     ]
   ){
+
     if(
-      row?.id&&
+      row?.id &&
       !map.has(row.id)
     ){
-      map.set(row.id,row);
+      map.set(
+        row.id,
+        row
+      );
     }
   }
 
   let opportunities=[
     ...map.values()
   ]
-    .map(t=>scoreOpportunity(t,now))
+    .map(
+      t=>scoreOpportunity(t,now)
+    )
     .sort(
       (a,b)=>
         b.opportunityScore-
         a.opportunityScore
     );
 
-  opportunities=await enrichTechnical(
-    opportunities
-  );
+  opportunities=
+    await enrichTechnical(
+      opportunities
+    );
 
   const data={
     updatedAtMs:now,
-    source:'Jupiter Tokens API V2',
-    universeSize:opportunities.length,
+
+    source:
+      'Jupiter Tokens API V2',
+
+    universeSize:
+      opportunities.length,
+
     opportunities,
 
     discovery:{
+
       trending:
         Array.isArray(trending)
           ?trending.slice(0,30)
@@ -206,19 +300,27 @@ async function scan(){
     }
   };
 
-  cache.set('scan',{
-    at:now,
-    data
-  });
+  cache.set(
+    'scan',
+    {
+      at:now,
+      data
+    }
+  );
 
   return data;
 }
 
-export default async (req:Request)=>{
+export default async (
+  req:Request
+)=>{
+
   if(req.method!=='GET'){
+
     return new Response(
       JSON.stringify({
-        error:'METHOD_NOT_ALLOWED'
+        error:
+          'METHOD_NOT_ALLOWED'
       }),
       {
         status:405,
@@ -231,11 +333,13 @@ export default async (req:Request)=>{
   }
 
   try{
+
+    const result=await scan();
+
     return new Response(
-      JSON.stringify(
-        await scan()
-      ),
+      JSON.stringify(result),
       {
+        status:200,
         headers:{
           'content-type':
             'application/json',
@@ -244,13 +348,17 @@ export default async (req:Request)=>{
         }
       }
     );
+
   }catch(e){
+
+    const message=
+      e instanceof Error
+        ?e.message
+        :'MARKET_SCAN_FAILED';
+
     return new Response(
       JSON.stringify({
-        error:
-          e instanceof Error
-            ?e.message
-            :'MARKET_SCAN_FAILED'
+        error:message
       }),
       {
         status:503,
