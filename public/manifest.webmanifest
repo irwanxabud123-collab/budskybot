@@ -1,0 +1,15 @@
+{
+  "name": "Budsky Bot — Real-Time Trading Terminal",
+  "short_name": "Budsky Bot",
+  "description": "Budsky Bot mobile trading control center.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "portrait-primary",
+  "theme_color": "#07030d",
+  "background_color": "#07030d",
+  "icons": [
+    { "src": "/budsky-logo.jpg", "sizes": "512x512", "type": "image/jpeg", "purpose": "any maskable" }
+  ]
+}

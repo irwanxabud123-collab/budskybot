@@ -1,0 +1,41 @@
+{
+  "name": "production-grade-solana-jupiter-trading-bot",
+  "version": "9.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "health": "node dist/src/index.js health",
+    "backtest": "node dist/src/index.js backtest",
+    "paper": "node dist/src/index.js paper --paper",
+    "paper:mainnet": "node dist/src/index.js paper:mainnet --paper-mainnet",
+    "dry-run": "node dist/src/index.js dry-run",
+    "live": "node dist/src/index.js live",
+    "dev": "npm run build && node dist/src/index.js health",
+    "validate-replay": "bash ./run_validation.sh",
+    "check-replay": "node scripts/check-replay-dataset.mjs",
+    "check-data": "node scripts/check-data.mjs",
+    "export": "node scripts/export.mjs",
+    "audit:v9": "npm run audit:static",
+    "audit:static": "node scripts/static-pattern-check.mjs",
+    "audit:functional": "node scripts/functional-audit.mjs",
+    "reconcile:unknown": "node dist/src/index.js reconcile-unknown"
+  },
+  "dependencies": {
+    "@solana/web3.js": "1.98.4",
+    "pino": "9.7.0",
+    "zod": "3.25.76",
+    "@aws-sdk/client-kms": "^3.800.0",
+    "tweetnacl": "1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.21",
+    "typescript": "5.8.3",
+    "vitest": "3.2.7"
+  }
+}

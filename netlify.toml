@@ -1,0 +1,94 @@
+[build]
+  command = "npm run build"
+  publish = "public"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[redirects]]
+  from = "/api/health"
+  to = "/.netlify/functions/health"
+  status = 200
+
+[[redirects]]
+  from = "/api/dry-run"
+  to = "/.netlify/functions/dry-run"
+  status = 200
+
+[[redirects]]
+  from = "/api/live"
+  to = "/.netlify/functions/live"
+  status = 200
+
+[[redirects]]
+  from = "/api/markets"
+  to = "/.netlify/functions/markets"
+  status = 200
+
+[[redirects]]
+  from = "/api/price"
+  to = "/.netlify/functions/price"
+  status = 200
+
+[[redirects]]
+  from = "/api/portfolio"
+  to = "/.netlify/functions/portfolio"
+  status = 200
+
+[[redirects]]
+  from = "/api/prepare-trade"
+  to = "/.netlify/functions/prepare-trade"
+  status = 200
+
+[[redirects]]
+  from = "/api/execute-trade"
+  to = "/.netlify/functions/execute-trade"
+  status = 200
+
+[[redirects]]
+  from = "/api/prepare-close-position"
+  to = "/.netlify/functions/prepare-close-position"
+  status = 200
+
+[[redirects]]
+  from = "/api/position-update"
+  to = "/.netlify/functions/position-update"
+  status = 200
+
+[[redirects]]
+  from = "/api/reconcile-trade"
+  to = "/.netlify/functions/reconcile-trade"
+  status = 200
+
+[[redirects]]
+  from = "/api/wallet-challenge"
+  to = "/.netlify/functions/wallet-challenge"
+  status = 200
+
+[[redirects]]
+  from = "/api/wallet-verify"
+  to = "/.netlify/functions/wallet-verify"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+    Content-Security-Policy = "default-src 'self'; img-src 'self' data:; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
+[[redirects]]
+  from = "/api/reconcile-unknown"
+  to = "/.netlify/functions/reconcile-unknown"
+  status = 200
+
+[[redirects]]
+  from = "/api/control"
+  to = "/.netlify/functions/control"
+  status = 200
