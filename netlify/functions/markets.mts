@@ -76,6 +76,7 @@ async function enrichTechnical(
     try{
 
       const pool=await findTopPool(o.mint);
+
       const candles=await fetchOHLCV(
         pool,
         '15m',
